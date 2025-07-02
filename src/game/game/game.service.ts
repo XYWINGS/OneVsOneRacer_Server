@@ -1,16 +1,20 @@
 import { Injectable } from '@nestjs/common';
 import { Socket } from 'socket.io';
+import { Player } from './types';
+import { Server } from 'socket.io';
 
 interface Room {
-  players: string[];
-  state: any; // You'll define proper game state interface later
+  players: Player[];
+  state: any;
   rematchRequests: Set<string>;
 }
 
 @Injectable()
 export class GameService {
+  [x: string]: any;
+
   private rooms: Map<string, Room> = new Map();
-  server: any;
+  private server: Server;
 
   joinRoom(
     client: Socket,
@@ -20,22 +24,45 @@ export class GameService {
 
     if (!room) {
       // Create new room if it doesn't exist
+      const newPlayer: Player = {
+        id: client.id,
+        position: { x: 0, y: 0 },
+        velocity: { x: 0, y: 0 },
+        rotation: 0,
+        input: { up: false, down: false, left: false, right: false },
+      };
       room = {
-        players: [client.id],
+        players: [newPlayer],
         state: this.initializeGameState(),
         rematchRequests: new Set(),
       };
+      room.state.players[client.id] = newPlayer;
       this.rooms.set(roomId, room);
       client.join(roomId);
+
+      // Notify players that game can start
+      if (room.players.length === 2) {
+        this.startGame(roomId);
+      }
+
       return { success: true };
     }
 
-    if (room.players.length >= 2) {
-      return { success: false, message: 'Room is full' };
+    // If room exists, check if player is already in the room
+    if (room.players.some((player) => player.id === client.id)) {
+      return { success: false, message: 'Player already in room.' };
     }
 
-    // Add player to existing room
-    room.players.push(client.id);
+    // Add new player to existing room
+    const newPlayer: Player = {
+      id: client.id,
+      position: { x: 0, y: 0 },
+      velocity: { x: 0, y: 0 },
+      rotation: 0,
+      input: { up: false, down: false, left: false, right: false },
+    };
+    room.players.push(newPlayer);
+    room.state.players[client.id] = newPlayer;
     client.join(roomId);
 
     // Notify players that game can start
@@ -49,7 +76,7 @@ export class GameService {
   handleDisconnect(client: Socket) {
     // Find and clean up any rooms this client was in
     for (const [roomId, room] of this.rooms.entries()) {
-      const index = room.players.indexOf(client.id);
+      const index = room.players.findIndex((player) => player.id === client.id);
       if (index !== -1) {
         room.players.splice(index, 1);
         // Notify remaining player about disconnect
@@ -114,5 +141,42 @@ export class GameService {
         room.state.countdown--;
       }
     }, 1000);
+  }
+
+  getRoomPlayers(roomId: string): Player[] {
+    const room = this.rooms.get(roomId);
+    return room ? room.players : [];
+  }
+
+  private updateGameState(roomId: string) {
+    const room = this.rooms.get(roomId);
+    if (!room) return;
+
+    // Update car positions based on physics
+    Object.values(room.state.players).forEach((player: Player) => {
+      // Simple physics
+      if (player.input.up) player.velocity.y -= 0.5;
+      if (player.input.down) player.velocity.y += 0.5;
+      if (player.input.left) player.velocity.x -= 0.5;
+      if (player.input.right) player.velocity.x += 0.5;
+
+      // Apply friction
+      player.velocity.x *= 0.9;
+      player.velocity.y *= 0.9;
+
+      // Update position
+      player.position.x += player.velocity.x;
+      player.position.y += player.velocity.y;
+    });
+
+    // Broadcast updated state
+    this.server.to(roomId).emit('gameStateUpdate', room.state);
+  }
+
+  // Call this in a game loop (e.g., every 16ms)
+  constructor() {
+    setInterval(() => {
+      this.rooms.forEach((_, roomId) => this.updateGameState(roomId));
+    }, 16);
   }
 }

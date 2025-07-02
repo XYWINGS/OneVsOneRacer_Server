@@ -1,4 +1,10 @@
-import { WebSocketGateway, WebSocketServer, SubscribeMessage, OnGatewayConnection, OnGatewayDisconnect } from '@nestjs/websockets';
+import {
+  WebSocketGateway,
+  WebSocketServer,
+  SubscribeMessage,
+  OnGatewayConnection,
+  OnGatewayDisconnect,
+} from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 import { GameService } from './game.service';
 
@@ -22,11 +28,6 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.gameService.handleDisconnect(client);
   }
 
-  @SubscribeMessage('joinRoom')
-  handleJoinRoom(client: Socket, roomId: string) {
-    return this.gameService.joinRoom(client, roomId);
-  }
-
   @SubscribeMessage('playerInput')
   handlePlayerInput(client: Socket, payload: { roomId: string; input: any }) {
     this.gameService.handlePlayerInput(client, payload.roomId, payload.input);
@@ -35,5 +36,20 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @SubscribeMessage('requestRematch')
   handleRematchRequest(client: Socket, roomId: string) {
     this.gameService.handleRematchRequest(client, roomId);
+  }
+
+  @SubscribeMessage('joinRoom')
+  async handleJoinRoom(client: Socket, payload: { roomId: string }) {
+    const result = await this.gameService.joinRoom(client, payload.roomId);
+
+    if (result.success) {
+      // Notify all players in the room
+      this.server.to(payload.roomId).emit('playerJoined', {
+        playerId: client.id,
+        players: this.gameService.getRoomPlayers(payload.roomId),
+      });
+    }
+
+    return result;
   }
 }
