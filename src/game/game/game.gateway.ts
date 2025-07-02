@@ -10,14 +10,21 @@ import { GameService } from './game.service';
 
 @WebSocketGateway({
   cors: {
-    origin: process.env.CLIENT_URL || 'http://localhost:3000',
+    origin: process.env.CLIENT_URL || 'http://localhost:3001',
     methods: ['GET', 'POST'],
+    credentials: true,
   },
+  allowEIO3: true,
 })
 export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer() server: Server;
 
   constructor(private readonly gameService: GameService) {}
+
+  afterInit() {
+    // Pass server instance to service
+    this.gameService.setServer(this.server);
+  }
 
   handleConnection(client: Socket) {
     console.log(`Client connected: ${client.id}`);
@@ -40,7 +47,9 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   @SubscribeMessage('joinRoom')
   async handleJoinRoom(client: Socket, payload: { roomId: string }) {
-    const result = await this.gameService.joinRoom(client, payload.roomId);
+    await client.join(payload.roomId);
+
+    const result = this.gameService.joinRoom(client, payload.roomId);
 
     if (result.success) {
       // Notify all players in the room

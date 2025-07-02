@@ -14,7 +14,19 @@ export class GameService {
   [x: string]: any;
 
   private rooms: Map<string, Room> = new Map();
-  private server: Server;
+  private server: Server | null = null;
+
+  setServer(server: Server) {
+    this.server = server;
+  }
+
+  // Update all methods that use this.server to check for null
+  private syncGameState(roomId: string) {
+    if (!this.server) return;
+    const room = this.rooms.get(roomId);
+    if (!room) return;
+    this.server.to(roomId).emit('gameStateUpdate', room.state);
+  }
 
   joinRoom(
     client: Socket,
@@ -101,7 +113,9 @@ export class GameService {
       // Reset game state for rematch
       room.state = this.initializeGameState();
       room.rematchRequests.clear();
-      this.server.to(roomId).emit('rematchAccepted');
+      if (this.server) {
+        this.server.to(roomId).emit('rematchAccepted');
+      }
       this.startGame(roomId);
     }
   }
@@ -124,12 +138,16 @@ export class GameService {
 
     // Start countdown
     const countdownInterval = setInterval(() => {
-      this.server.to(roomId).emit('countdownUpdate', room.state.countdown);
+      if (this.server) {
+        this.server.to(roomId).emit('countdownUpdate', room.state.countdown);
+      }
 
       if (room.state.countdown <= 0) {
         clearInterval(countdownInterval);
         room.state.raceStarted = true;
-        this.server.to(roomId).emit('raceStart');
+        if (this.server) {
+          this.server.to(roomId).emit('raceStart');
+        }
       } else {
         room.state.countdown--;
       }
@@ -163,7 +181,9 @@ export class GameService {
     });
 
     // Broadcast updated state
-    this.server.to(roomId).emit('gameStateUpdate', room.state);
+    if (this.server) {
+      this.server.to(roomId).emit('gameStateUpdate', room.state);
+    }
   }
 
   private updatePlayerPosition(player: Player, input: PlayerInput) {
