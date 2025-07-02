@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { Socket } from 'socket.io';
-import { Player } from './types';
+import { Player, PlayerInput } from './types';
 import { Server } from 'socket.io';
 
 interface Room {
@@ -91,13 +91,6 @@ export class GameService {
     }
   }
 
-  handlePlayerInput(client: Socket, roomId: string, input: any) {
-    const room = this.rooms.get(roomId);
-    if (!room) return;
-
-    client.to(roomId).emit('gameStateUpdate', room.state);
-  }
-
   handleRematchRequest(client: Socket, roomId: string) {
     const room = this.rooms.get(roomId);
     if (!room) return;
@@ -173,6 +166,40 @@ export class GameService {
     this.server.to(roomId).emit('gameStateUpdate', room.state);
   }
 
+  private updatePlayerPosition(player: Player, input: PlayerInput) {
+    // Apply acceleration
+    if (input.up) player.velocity.y -= 0.2;
+    if (input.down) player.velocity.y += 0.2;
+    if (input.left) {
+      player.velocity.x -= 0.2;
+      player.rotation -= 0.05;
+    }
+    if (input.right) {
+      player.velocity.x += 0.2;
+      player.rotation += 0.05;
+    }
+
+    // Apply friction
+    player.velocity.x *= 0.96;
+    player.velocity.y *= 0.96;
+
+    // Update position
+    player.position.x += player.velocity.x;
+    player.position.y += player.velocity.y;
+
+    // Keep within track bounds (simplified)
+    player.position.x = Math.max(50, Math.min(750, player.position.x));
+    player.position.y = Math.max(50, Math.min(550, player.position.y));
+  }
+
+  public handlePlayerInput(client: Socket, roomId: string, input: PlayerInput) {
+    const room = this.rooms.get(roomId);
+    if (!room || !room.state.players[client.id]) return;
+
+    room.state.players[client.id].input = input;
+    this.updatePlayerPosition(room.state.players[client.id], input);
+    this.syncGameState(roomId);
+  }
   // Call this in a game loop (e.g., every 16ms)
   constructor() {
     setInterval(() => {
