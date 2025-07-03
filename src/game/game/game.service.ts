@@ -1,7 +1,7 @@
-import { Injectable } from '@nestjs/common';
 import { Socket } from 'socket.io';
-import { Player, PlayerInput } from './types';
 import { Server } from 'socket.io';
+import { Injectable } from '@nestjs/common';
+import { Player, PlayerInput } from './types';
 
 interface Room {
   players: Player[];
@@ -20,12 +20,24 @@ export class GameService {
     this.server = server;
   }
 
-  // Update all methods that use this.server to check for null
   private syncGameState(roomId: string) {
     if (!this.server) return;
     const room = this.rooms.get(roomId);
     if (!room) return;
+
+    console.log(`Syncing game state for room ${roomId}:`, room.state);
     this.server.to(roomId).emit('gameStateUpdate', room.state);
+  }
+
+  // Fix the constructor game loop
+  constructor() {
+    setInterval(() => {
+      this.rooms.forEach((room, roomId) => {
+        if (room.state.raceStarted) {
+          this.updateGameState(roomId);
+        }
+      });
+    }, 16); // 60 FPS
   }
 
   joinRoom(
@@ -88,16 +100,30 @@ export class GameService {
   handleDisconnect(client: Socket) {
     // Find and clean up any rooms this client was in
     for (const [roomId, room] of this.rooms.entries()) {
-      const index = room.players.findIndex((player) => player.id === client.id);
-      if (index !== -1) {
-        room.players.splice(index, 1);
-        // Notify remaining player about disconnect
-        if (room.players.length > 0) {
-          client.to(roomId).emit('playerDisconnected');
+      const playerIndex = room.players.findIndex(
+        (player) => player.id === client.id,
+      );
+      if (playerIndex !== -1) {
+        // Remove player from room
+        room.players.splice(playerIndex, 1);
+        delete room.state.players[client.id];
+
+        // Notify remaining players about disconnect
+        if (this.server) {
+          this.server.to(roomId).emit('playerLeft', {
+            players: room.players.map((p) => p.id),
+            disconnectedPlayer: client.id,
+          });
         }
+
         // Clean up empty rooms
         if (room.players.length === 0) {
           this.rooms.delete(roomId);
+        } else {
+          // If there's still one player left, reset the game state
+          room.state.raceStarted = false;
+          room.state.countdown = 0;
+          this.syncGameState(roomId);
         }
       }
     }
@@ -159,71 +185,51 @@ export class GameService {
     return room ? room.players : [];
   }
 
-  private updateGameState(roomId: string) {
-    const room = this.rooms.get(roomId);
-    if (!room) return;
-
-    // Update car positions based on physics
-    Object.values(room.state.players).forEach((player: Player) => {
-      // Simple physics
-      if (player.input.up) player.velocity.y -= 0.5;
-      if (player.input.down) player.velocity.y += 0.5;
-      if (player.input.left) player.velocity.x -= 0.5;
-      if (player.input.right) player.velocity.x += 0.5;
-
-      // Apply friction
-      player.velocity.x *= 0.9;
-      player.velocity.y *= 0.9;
-
-      // Update position
-      player.position.x += player.velocity.x;
-      player.position.y += player.velocity.y;
-    });
-
-    // Broadcast updated state
-    if (this.server) {
-      this.server.to(roomId).emit('gameStateUpdate', room.state);
-    }
-  }
-
-  private updatePlayerPosition(player: Player, input: PlayerInput) {
-    // Apply acceleration
-    if (input.up) player.velocity.y -= 0.2;
-    if (input.down) player.velocity.y += 0.2;
-    if (input.left) {
-      player.velocity.x -= 0.2;
-      player.rotation -= 0.05;
-    }
-    if (input.right) {
-      player.velocity.x += 0.2;
-      player.rotation += 0.05;
-    }
-
-    // Apply friction
-    player.velocity.x *= 0.96;
-    player.velocity.y *= 0.96;
-
-    // Update position
-    player.position.x += player.velocity.x;
-    player.position.y += player.velocity.y;
-
-    // Keep within track bounds (simplified)
-    player.position.x = Math.max(50, Math.min(750, player.position.x));
-    player.position.y = Math.max(50, Math.min(550, player.position.y));
-  }
-
+  // Fix the handlePlayerInput method
   public handlePlayerInput(client: Socket, roomId: string, input: PlayerInput) {
     const room = this.rooms.get(roomId);
     if (!room || !room.state.players[client.id]) return;
 
+    console.log(`Player ${client.id} input:`, input);
+
+    // Update player input
     room.state.players[client.id].input = input;
-    this.updatePlayerPosition(room.state.players[client.id], input);
+
+    // Sync immediately for responsiveness
     this.syncGameState(roomId);
   }
-  // Call this in a game loop (e.g., every 16ms)
-  constructor() {
-    setInterval(() => {
-      this.rooms.forEach((_, roomId) => this.updateGameState(roomId));
-    }, 16);
+  private updateGameState(roomId: string) {
+    const room = this.rooms.get(roomId);
+    if (!room || !room.state.raceStarted) return;
+
+    // Update car positions based on physics
+    Object.values(room.state.players).forEach((player: Player) => {
+      // Apply input-based movement
+      if (player.input.up) player.velocity.y -= 0.3;
+      if (player.input.down) player.velocity.y += 0.3;
+      if (player.input.left) {
+        player.velocity.x -= 0.3;
+        player.rotation -= 0.05;
+      }
+      if (player.input.right) {
+        player.velocity.x += 0.3;
+        player.rotation += 0.05;
+      }
+
+      // Apply friction
+      player.velocity.x *= 0.95;
+      player.velocity.y *= 0.95;
+
+      // Update position
+      player.position.x += player.velocity.x;
+      player.position.y += player.velocity.y;
+
+      // Keep within bounds
+      player.position.x = Math.max(50, Math.min(750, player.position.x));
+      player.position.y = Math.max(50, Math.min(550, player.position.y));
+    });
+
+    // Broadcast updated state
+    this.syncGameState(roomId);
   }
 }
