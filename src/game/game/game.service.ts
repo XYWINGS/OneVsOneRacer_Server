@@ -152,6 +152,11 @@ export class GameService {
       raceStarted: false,
       countdown: 0,
       winner: null,
+      track: {
+        width: 800,
+        height: 600,
+        checkpoints: [],
+      },
     };
   }
 
@@ -159,6 +164,7 @@ export class GameService {
     const room = this.rooms.get(roomId);
     if (!room) return;
 
+    room.state.track.checkpoints = this.generateTrackCheckpoints();
     room.state.raceStarted = false;
     room.state.countdown = 3;
 
@@ -185,6 +191,25 @@ export class GameService {
     return room ? room.players : [];
   }
 
+  private generateTrackCheckpoints() {
+    type Checkpoint = { x: number; y: number; width: number; rotation: number };
+    const checkpoints: Checkpoint[] = [];
+    const segments = 12;
+    const center = { x: 400, y: 300 };
+    const radius = 250;
+
+    for (let i = 0; i < segments; i++) {
+      const angle = (i / segments) * Math.PI * 2;
+      checkpoints.push({
+        x: center.x + Math.cos(angle) * radius,
+        y: center.y + Math.sin(angle) * radius,
+        width: 60,
+        rotation: angle + Math.PI / 2,
+      });
+    }
+    return checkpoints;
+  }
+
   // Fix the handlePlayerInput method
   public handlePlayerInput(client: Socket, roomId: string, input: PlayerInput) {
     const room = this.rooms.get(roomId);
@@ -198,35 +223,81 @@ export class GameService {
     // Sync immediately for responsiveness
     this.syncGameState(roomId);
   }
+
   private updateGameState(roomId: string) {
     const room = this.rooms.get(roomId);
     if (!room || !room.state.raceStarted) return;
 
-    // Update car positions based on physics
+    // Define track boundaries here since we don't have TRACK_CONFIG
+    const TRACK_WIDTH = 800;
+    const TRACK_HEIGHT = 600;
+    const BOUNDARY_PADDING = 50;
+
+    // Physics constants (tune these as needed)
+    const ACCELERATION = 0.2;
+    const REVERSE_ACCEL = 0.1;
+    const MAX_SPEED = 8;
+    const TURN_RATE = 0.1;
+    const DRAG = 0.96;
+
     Object.values(room.state.players).forEach((player: Player) => {
-      // Apply input-based movement
-      if (player.input.up) player.velocity.y -= 0.3;
-      if (player.input.down) player.velocity.y += 0.3;
-      if (player.input.left) {
-        player.velocity.x -= 0.3;
-        player.rotation -= 0.05;
+      // Calculate direction vector based on car rotation
+      const direction = {
+        x: Math.sin(player.rotation),
+        y: -Math.cos(player.rotation),
+      };
+
+      // Calculate current speed
+      const currentSpeed = Math.sqrt(
+        player.velocity.x ** 2 + player.velocity.y ** 2,
+      );
+
+      // Handle acceleration in facing direction
+      if (player.input.up) {
+        player.velocity.x += direction.x * ACCELERATION;
+        player.velocity.y += direction.y * ACCELERATION;
       }
-      if (player.input.right) {
-        player.velocity.x += 0.3;
-        player.rotation += 0.05;
+      // Handle braking/reverse
+      else if (player.input.down) {
+        player.velocity.x -= direction.x * REVERSE_ACCEL;
+        player.velocity.y -= direction.y * REVERSE_ACCEL;
       }
 
-      // Apply friction
-      player.velocity.x *= 0.95;
-      player.velocity.y *= 0.95;
+      // Handle steering (only effective when moving)
+      if (currentSpeed > 0.1) {
+        const turnEffect = TURN_RATE * (currentSpeed / MAX_SPEED);
+        if (player.input.left) {
+          player.rotation -= turnEffect;
+        }
+        if (player.input.right) {
+          player.rotation += turnEffect;
+        }
+      }
+
+      // Apply drag/friction
+      player.velocity.x *= DRAG;
+      player.velocity.y *= DRAG;
+
+      // Limit maximum speed
+      if (currentSpeed > MAX_SPEED) {
+        const ratio = MAX_SPEED / currentSpeed;
+        player.velocity.x *= ratio;
+        player.velocity.y *= ratio;
+      }
 
       // Update position
       player.position.x += player.velocity.x;
       player.position.y += player.velocity.y;
 
-      // Keep within bounds
-      player.position.x = Math.max(50, Math.min(750, player.position.x));
-      player.position.y = Math.max(50, Math.min(550, player.position.y));
+      // Keep within track boundaries
+      player.position.x = Math.max(
+        BOUNDARY_PADDING,
+        Math.min(TRACK_WIDTH - BOUNDARY_PADDING, player.position.x),
+      );
+      player.position.y = Math.max(
+        BOUNDARY_PADDING,
+        Math.min(TRACK_HEIGHT - BOUNDARY_PADDING, player.position.y),
+      );
     });
 
     // Broadcast updated state
